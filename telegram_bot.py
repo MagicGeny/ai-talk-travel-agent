@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from telebot import TeleBot, types
 from telebot.util import quick_markup
+import asyncio
 import json
 from dotenv import load_dotenv
 
@@ -21,9 +22,20 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True  # ПРИНУДИТЕЛЬНО ПЕРЕЗАПИСАТЬ КОНФИГ
 )
 logger = logging.getLogger(__name__)
+
+# Если логгер пустой, добавим ему вывод в консоль вручную
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    # Чтобы логи не дублировались и не уходили в корень, если не нужно
+    logger.propagate = False
 
 # Get Telegram bot token from environment
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8197325061:AAG1hBi0upczFxDKg8T9KtTnmGBtUQQzxiM")
@@ -38,11 +50,11 @@ def get_user_session(user_id: int) -> Dict[str, Any]:
     """Get or create user session"""
     if user_id not in user_sessions:
         user_sessions[user_id] = {
-            "conversation_active": False,
+            "conversation_active": True,
             "current_goal": 1,
             "user_responses": {},
             "error_count": 0,
-            "max_errors": 3,
+            "max_errors": 11,
             "goal_completed": False,
             "has_asked_goal_1": False
         }
@@ -51,47 +63,62 @@ def get_user_session(user_id: int) -> Dict[str, Any]:
 def reset_user_session(user_id: int):
     """Reset user session for new conversation"""
     user_sessions[user_id] = {
-        "conversation_active": False,
+        "conversation_active": True,
         "current_goal": 1,
         "user_responses": {},
         "error_count": 0,
-        "max_errors": 3,
+        "max_errors": 11,
         "goal_completed": False,
         "has_asked_goal_1": False
     }
 
-def process_travel_agent_message(user_id: int, message_text: str) -> str:
-    """Process message through travel agent and return response"""
+async def process_travel_agent_message(user_id: int, message_text: str) -> str:
+    """Обработка сообщения для тревел-агента с защитой от пустых ответов."""
     try:
+        # 1. Сначала сбрасываем или получаем сессию (как у тебя в коде)
+        # reset_agent_state() # Если нужно для теста, но обычно сессия живет
+
+        max_retries = 7
+        attempt = 0
+        assistant_text = ""
+
         # Get user session
         session = get_user_session(user_id)
-        
+
         # Update global agent state with user session
         global agent_state
         agent_state.update(session)
-        
-        # Use the common function to process the travel request
-        result = process_travel_request(message_text) #str(user_id)
-        
-        # Update user session with current agent state
-        session.update(agent_state)
-        
-        # Get the last assistant message from memory
-        memory_list = result["memory"]
-        assistant_messages = [item for item in memory_list if item["type"] == "assistant"]
-        
-        if assistant_messages:
-            return assistant_messages[-1]["content"]
-        else:
-            return "Извините, произошла ошибка при обработке вашего запроса. Попробуйте еще раз."
-            
+
+        # ЦИКЛ ПЕРЕЗАПУСКА, ЕСЛИ ТЕКСТ ПУСТОЙ
+        while attempt < max_retries and not assistant_text:
+            attempt += 1
+            result = await process_travel_request(message_text, str(user_id))
+            # Если статус "completed" и текста нет — значит игнорируем
+            if result.get("status") == "completed" and result.get("text") is None:
+                return "__ignore__"
+            # Update user session with current agent state
+            session.update(agent_state)
+            # Get the assistant message from the new 'text' field
+            assistant_text = result.get("text")
+            if assistant_text:
+                return assistant_text
+            await asyncio.sleep(1)
+
+        # Если после 3 попыток пусто - выдаем твой вежливый костыль
+        if not assistant_text:
+            return "Подождите, пожалуйста, я сейчас занимаюсь вашим запросом. Подождете, хорошо?"
+
     except Exception as e:
-        logger.error(f"Error processing travel agent message: {str(e)}")
-        return f"Произошла ошибка: {str(e)}. Попробуйте еще раз."
+        logger.error(f"Error in process_travel_agent_message: {str(e)}")
+        # Если произошла именно техническая ошибка (Exception)
+        return "Извините, я сейчас занимаюсь вашим запросом. Подождете, хорошо?"
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     """Handle /start and /help commands"""
+    user_id = message.from_user.id
+    reset_user_session(user_id)
+    
     welcome_text = """🌍 Добро пожаловать в AI Travel Agent!
 
 Я помогу вам спланировать идеальную поездку! Просто напишите мне, и я проведу с вами интервью, чтобы понять ваши предпочтения.
@@ -148,13 +175,22 @@ def handle_message(message):
         
         logger.info(f"Received message from user {user_id}: {message_text}")
         
+        # 0. Логируем входящее сообщение сразу
+        from travel_agent import log_conversation
+        log_conversation(str(user_id), "Пользователь", message_text)
+        
         # Process message through travel agent
-        response = process_travel_agent_message(user_id, message_text)
+        # Note: In a real environment with telebot, this should be handled properly for async
+        # For now, let's keep the user's intended logic of checking for ignore
+        import asyncio
+        response = asyncio.run(process_travel_agent_message(user_id, message_text))
         
-        # Send response back to user
-        bot.reply_to(message, response)
-        
-        logger.info(f"Sent response to user {user_id}: {response[:100]}...")
+        # Send response back to user if not ignored
+        if response != "__ignore__":
+            bot.reply_to(message, response)
+            logger.info(f"Sent response to user {user_id}: {response[:100]}...")
+        else:
+            logger.info(f"Ignored message from user {user_id} (conversation completed)")
         
     except Exception as e:
         logger.error(f"Error handling message: {str(e)}")

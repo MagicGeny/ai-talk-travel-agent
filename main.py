@@ -133,7 +133,7 @@ async def travel_agent(request: TravelAgentRequest):
     """
     try:
         # Use the common function to process the travel request
-        result = process_travel_request(request.message)
+        result = await process_travel_request(request.message)
         
         return TravelAgentResponse(
             memory=result["memory"],
@@ -207,14 +207,51 @@ async def health_check():
     return {"status": "healthy", "service": "ai-talk-travel-agent"}
 
 
+async def keep_typing(peer_id):
+    """Фоновая задача для поддержания статуса 'печатает'"""
+    try:
+        while True:
+            await botVK.api.messages.set_activity(peer_id=peer_id, type="typing")
+            await asyncio.sleep(5)  # Повторяем каждые 5 секунд
+    except asyncio.CancelledError:
+        # Задача будет отменена, когда придет ответ
+        pass
+
 @botVK.on.message()
 async def travel_handler(message: Message):
     user_id = f"vk_{message.from_id}"  # Добавляем префикс платформы
     user_text = message.text
 
-    # Передаем строку с префиксом, чтобы сессии не пересекались
-    response = process_travel_agent_message(user_id, user_text)
-    await message.answer(response)
+    # 0. Логируем входящее сообщение сразу в самом начале
+    from travel_agent import log_conversation
+    log_conversation(user_id, "Пользователь", user_text)
+
+    # 1. Проверка команды сброса (ручной сброс) ПЕРЕД всем остальным
+    if user_text.lower() in ["/start", "привет", "старт", "начать", "start"]:
+        from telegram_bot import reset_user_session
+        reset_user_session(user_id)
+        await message.answer("Давайте начнем сначала:) Напишите когда вы планируете вашу поездку?")
+        return
+
+    # 2. Запускаем "вечное" печатание в фоновом режиме
+    typing_task = asyncio.create_task(keep_typing(message.peer_id))
+    # ---------------------
+
+    try:
+        # 3. Ждем ответа от агента (тут может быть долгая задержка)
+        response = await process_travel_agent_message(user_id, user_text)
+
+        # 4. Как только ответ готов, останавливаем "печатание"
+        typing_task.cancel()
+
+        # 5. Если ответ не "__ignore__", отправляем его
+        if response != "__ignore__":
+            await message.answer(response)
+
+    except Exception as e:
+        typing_task.cancel()
+        print(f"Ошибка: {e}")
+        await message.answer("Извините, подождите пожалуйста")
 
     # # Пример простого ответа:
     # if "привет" in user_text.lower():
@@ -277,7 +314,7 @@ if __name__ == "__main__":
 
     async def main():
         # Настройка сервера FastAPI
-        config = uvicorn.Config(app, host="0.0.0.0", port=8081)
+        config = uvicorn.Config(app, host="0.0.0.0", port=8080)
         server = uvicorn.Server(config)
 
         print("🚀 СИСТЕМА ЗАПУСКАЕТСЯ: API + VK BOT")
