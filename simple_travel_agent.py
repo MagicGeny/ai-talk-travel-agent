@@ -6,13 +6,13 @@ This agent interviews users about their trip purpose without using function call
 
 import json
 from typing import Dict, Any
-from litellm import completion
+from litellm import completion, acompletion
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-def run_simple_travel_agent(user_input: str) -> Dict[str, Any]:
+async def run_simple_travel_agent(user_input: str) -> Dict[str, Any]:
     """
     Run a simple travel agent that interviews the user about trip purpose
     """
@@ -38,7 +38,7 @@ Keep your responses concise and focused on these two goals."""
     
     try:
         # Call the LLM
-        response = completion(
+        response = await acompletion(
             model="openrouter/google/gemini-2.0-flash-exp:free",
             messages=messages,
             max_tokens=1024
@@ -67,8 +67,9 @@ Keep your responses concise and focused on these two goals."""
 
 if __name__ == "__main__":
     # Test the simple travel agent
+    import asyncio
     user_input = input("What is the purpose of your trip? ")
-    result = run_simple_travel_agent(user_input)
+    result = asyncio.run(run_simple_travel_agent(user_input))
     
     print("\n📝 Travel Agent Memory:")
     print("=" * 50)

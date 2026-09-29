@@ -104,9 +104,9 @@ async def process_travel_agent_message(user_id: int, message_text: str) -> str:
                 return assistant_text
             await asyncio.sleep(1)
 
-        # Если после 3 попыток пусто - выдаем твой вежливый костыль
+        # Если после 3 попыток пусто - выдаем костыль
         if not assistant_text:
-            return "Подождите, пожалуйста, я сейчас занимаюсь вашим запросом. Подождете, хорошо?"
+            return "Извините, пожалуйста, я сейчас занимаюсь вашим запросом. Подождете, хорошо?"
 
     except Exception as e:
         logger.error(f"Error in process_travel_agent_message: {str(e)}")

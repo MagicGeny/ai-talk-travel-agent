@@ -4,7 +4,7 @@ from typing import Dict, Any
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import litellm
-from litellm import completion
+from litellm import acompletion, RateLimitError, ServiceUnavailableError
 from dotenv import load_dotenv
 from simple_travel_agent import run_simple_travel_agent
 from travel_agent import run_travel_agent_with_input, process_travel_request
@@ -13,15 +13,14 @@ from telegram_bot import process_webhook_update, set_webhook, get_bot_info, proc
 
 from vkbottle.bot import Bot, Message
 from vkbottle import Keyboard, Text
+from fuzzywuzzy import fuzz
 
-# Твой класс агента (мозг)
 # from core.agent import TravelAgent
 botVK = Bot(token=os.environ.get("VK_POOL_KEY"))
 # Load environment variables
 #pydevd_pycharm.settrace('localhost', port=12388, stdoutToServer=True, stderrToServer=True)
 load_dotenv()
-litellm.set_verbose=True
-#litellm.turn_on_debug()
+#litellm.set_verbose=True
 
 
 # Configure litellm for OpenRouter function calling
@@ -35,6 +34,7 @@ class MessageRequest(BaseModel):
     model: str = "openrouter/google/gemini-2.0-flash-exp:free"
     max_tokens: int = 1024
 
+#response
 class MessageResponse(BaseModel):
     response: str
     model_used: str
@@ -64,7 +64,7 @@ class TelegramWebhookRequest(BaseModel):
     chat_member: Dict[str, Any] = None
     chat_join_request: Dict[str, Any] = None
 
-def generate_ai_response(message: str, model: str = "openrouter/google/gemini-2.0-flash-exp:free", max_tokens: int = 1024) -> Dict[str, Any]:
+async def generate_ai_response(message: str, model: str = "openrouter/google/gemini-2.0-flash-exp:free", max_tokens: int = 1024) -> Dict[str, Any]:
     """
     Generate response using litellm, following the pattern from the reference implementation
     """
@@ -75,7 +75,7 @@ def generate_ai_response(message: str, model: str = "openrouter/google/gemini-2.
         ]
         
         # Call the LLM using litellm completion function
-        response = completion(
+        response = await litellm.acompletion(
             model=model,
             messages=messages,
             max_tokens=max_tokens
@@ -115,7 +115,7 @@ async def chat(request: MessageRequest):
     Accept a message and forward it to the neural network using litellm
     """
     try:
-        result = generate_ai_response(
+        result = await generate_ai_response(
             message=request.message,
             model=request.model,
             max_tokens=request.max_tokens
@@ -226,8 +226,22 @@ async def travel_handler(message: Message):
     from travel_agent import log_conversation
     log_conversation(user_id, "Пользователь", user_text)
 
+
     # 1. Проверка команды сброса (ручной сброс) ПЕРЕД всем остальным
-    if user_text.lower() in ["/start", "привет", "старт", "начать", "start"]:
+    keywords = ["привет", "здравствуйте", "старт", "начать", "здрасте", "приветствую"]
+    message_text = user_text.lower()
+
+    # Разбиваем сообщение на слова и проверяем каждое
+    is_match = False
+    for word in message_text.split():
+        for key in keywords:
+            # score — это процент схожести (от 0 до 100)
+            score = fuzz.ratio(word, key)
+            if score > 80:  # 80 — оптимальный порог для опечаток
+                is_match = True
+                break
+
+    if is_match or message_text.startswith('/start'):
         from telegram_bot import reset_user_session
         reset_user_session(user_id)
         await message.answer("Давайте начнем сначала:) Напишите когда вы планируете вашу поездку?")
@@ -314,7 +328,7 @@ if __name__ == "__main__":
 
     async def main():
         # Настройка сервера FastAPI
-        config = uvicorn.Config(app, host="0.0.0.0", port=8080)
+        config = uvicorn.Config(app, host="0.0.0.0", port=8081)
         server = uvicorn.Server(config)
 
         print("🚀 СИСТЕМА ЗАПУСКАЕТСЯ: API + VK BOT")

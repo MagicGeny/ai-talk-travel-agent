@@ -2,7 +2,7 @@ import json
 import time
 import traceback
 import inspect
-from litellm import completion
+from litellm import completion, acompletion
 from dataclasses import dataclass, field
 from typing import get_type_hints, List, Callable, Dict, Any
 
@@ -150,7 +150,7 @@ class Prompt:
     metadata: dict = field(default_factory=dict)  # Fixing mutable default issue
 
 
-def generate_response(prompt: Prompt) -> str:
+async def generate_response(prompt: Prompt) -> str:
     """Вызвать LLM для получения ответа с использованием модели Qwen"""
 
     messages = prompt.messages
@@ -162,11 +162,11 @@ def generate_response(prompt: Prompt) -> str:
     import litellm
     # Note: add_function_to_prompt can cause issues with newer litellm versions
     # litellm.add_function_to_prompt = True
-    litellm.set_verbose = True
+    # litellm.set_verbose = True
 
     try:
         if not tools:
-            response = completion(
+            response = await acompletion(
                 model="openrouter/google/gemini-2.0-flash-exp:free",
                 messages=messages,
                 max_tokens=1024
@@ -182,7 +182,7 @@ def generate_response(prompt: Prompt) -> str:
                     # Handle different tool formats
                     formatted_tools.append(tool)
             
-            response = completion(
+            response = await acompletion(
                 model="openrouter/google/gemini-2.0-flash-exp:free",
                 messages=messages,
                 tools=formatted_tools,
@@ -203,7 +203,7 @@ def generate_response(prompt: Prompt) -> str:
         print(f"Error in generate_response: {e}")
         # Fallback to simple completion without tools
         try:
-            response = completion(
+            response = await acompletion(
                 model="openrouter/google/gemini-2.0-flash-exp:free",
                 messages=messages,
                 max_tokens=1024
@@ -449,7 +449,7 @@ class Agent:
                  goals: List[Goal],
                  agent_language: AgentLanguage,
                  action_registry: ActionRegistry,
-                 generate_response: Callable[[Prompt], str],
+                 generate_response: Callable[[Prompt], Any],
                  environment: Environment):
         """
         Initialize an agent with its core GAME components
@@ -492,11 +492,11 @@ class Agent:
         for m in new_memories:
             memory.add_memory(m)
 
-    def prompt_llm_for_action(self, full_prompt: Prompt) -> str:
-        response = self.generate_response(full_prompt)
+    async def prompt_llm_for_action(self, full_prompt: Prompt) -> str:
+        response = await self.generate_response(full_prompt)
         return response
 
-    def run(self, user_input: str, memory=None, max_iterations: int = 50) -> Memory:
+    async def run(self, user_input: str, memory=None, max_iterations: int = 50) -> Memory:
         """
         Execute the GAME loop for this agent with a maximum iteration limit.
         """
@@ -509,7 +509,7 @@ class Agent:
 
             print("Agent thinking...")
             # Generate a response from the agent
-            response = self.prompt_llm_for_action(prompt)
+            response = await self.prompt_llm_for_action(prompt)
             print(f"Agent Decision: {response}")
 
             # Determine which action the agent wants to execute
